@@ -1,6 +1,6 @@
 # Pre-Audit API
 
-This API server accepts Solidity source code, forwards it to an external audit analyzer, and returns the audit report.
+This API server accepts Solidity source code, forwards it to an external audit analyzer, and returns the audit report. It also exposes a transaction preflight guard that resolves a destination address (EOA / verified contract / unverified contract) and runs the analyzer on verified Sepolia contracts before a wallet broadcasts the transaction.
 
 ## Setup
 
@@ -9,7 +9,15 @@ cp .env.sample .env
 npm start
 ```
 
-Set the real analyzer endpoint in `AUDIT_ANALYZER_URL` inside `.env` before starting the server. `.env` is not committed to git. If `PORT` is already in use, change it to an available port.
+Fill `.env` with the real values before starting:
+
+| Key | Required for | Notes |
+| --- | --- | --- |
+| `AUDIT_ANALYZER_URL` | both endpoints | Upstream analyzer URL (intentionally not shown here) |
+| `ETHERSCAN_API_KEY` | `/v1/tx/preflight` | Etherscan v2 multichain API key |
+| `SEPOLIA_RPC_URL` | `/v1/tx/preflight` | Defaults to `https://1rpc.io/sepolia` |
+
+`.env` is not committed to git. If `PORT` is already in use, change it to an available port.
 
 ## API
 
@@ -36,6 +44,39 @@ Accepted JSON fields are `source_code`, `solidity`, or `code`. The upstream requ
 ```json
 {
   "source_code": "<solidity source>"
+}
+```
+
+### `POST /v1/tx/preflight`
+
+Transaction-time guard. Given a destination address, resolves whether it is an EOA, a verified contract, or an unverified contract on Sepolia, then runs the analyzer on the verified source. Returns `safe` / `warning` / `unsafe`.
+
+```sh
+curl -X POST http://localhost:13001/v1/tx/preflight \
+  -H 'content-type: application/json' \
+  -d '{"to":"0xc4680Ab74eB4a4F7379016aa7b6044380Ae4C0C0","chainId":11155111}'
+```
+
+Decision flow:
+
+1. JSON-RPC `eth_getCode(to)`. Empty code → `address_type=eoa`, `verdict=safe`.
+2. Etherscan v2 `getsourcecode`. Empty `SourceCode` → `code_status=unverified`, `verdict=warning` (analyzer skipped).
+3. Verified source is normalized (Standard JSON Input is unwrapped, application files are kept and `@openzeppelin/`, `@uniswap/`, `lib/`, `node_modules/`, `forge-std/` paths are dropped) and forwarded to the analyzer.
+4. Verdict from `vulnerabilities[]`: any finding with `severity` of `medium`/`high`/`critical` → `unsafe`. Otherwise `safe`.
+
+Only `chainId=11155111` (Sepolia) is supported.
+
+Response shape:
+
+```json
+{
+  "to": "0x...",
+  "chainId": 11155111,
+  "address_type": "eoa | contract",
+  "code_status": "none | unverified | verified",
+  "verdict": "safe | warning | unsafe",
+  "reason": "...",
+  "audit": null
 }
 ```
 
@@ -109,3 +150,24 @@ Response:
   ]
 }
 ```
+
+## Sepolia Live Verification — `/v1/tx/preflight`
+
+The `x402-hook` submodule deploys a paired safe and vulnerable Uniswap v4 hook to Sepolia (see [`x402-hook/README.md`](x402-hook/README.md)). Running the preflight against those addresses yields:
+
+| Case | Address | `address_type` | `code_status` | `verdict` | Analyzer summary |
+| --- | --- | --- | --- | --- | --- |
+| Deployer EOA | `0x2f149CaA0e931e13f6F32bd3E46eFc6e96bcC36A` | `eoa` | `none` | `safe` | (analyzer skipped) |
+| `Aegis402SafeHook` | `0xc4680Ab74eB4a4F7379016aa7b6044380Ae4C0C0` | `contract` | `verified` | `safe` | `overall_severity=info`, `overall_risk_score=0`, 0 findings |
+| `Aegis402VulnerableHook` | `0x70fAA067bE47D8dc839088Dcfc6f9338c07c80C0` | `contract` | `verified` | `unsafe` | `overall_severity=critical`, `overall_risk_score=94`, 6 medium+ findings |
+
+The 6 findings on `Aegis402VulnerableHook` map to the audit answer key in [`x402-hook/PROPOSAL.md`](x402-hook/PROPOSAL.md) §9:
+
+| Answer key | Analyzer finding |
+| --- | --- |
+| V-01 missing access control | `[critical]` Missing access control on admin configuration functions |
+| V-02 reentrancy-prone ordering | `[high]` Unchecked external call before settlement finalization (reentrancy risk) |
+| V-03 unchecked arithmetic | `[medium]` Integer overflow/underflow in fee accounting |
+| V-04 `tx.origin` authorization | `[high]` Authorization bypass using tx.origin |
+| V-05 unchecked ERC20 transfer | `[medium]` Unchecked ERC20 transfer return value and premature settlement flag |
+| (bonus) | `[high]` Missing payment validation and guard signature verification |

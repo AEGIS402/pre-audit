@@ -2,6 +2,8 @@ import http from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { runPreflight } from "./preflight.js";
+
 loadEnv();
 
 const PORT = parseInteger(process.env.PORT, 13001);
@@ -52,6 +54,11 @@ async function route(req, res) {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/v1/tx/preflight") {
+    await preflightTx(req, res);
+    return;
+  }
+
   sendJson(res, 404, {
     error: "not_found",
     message: "Route not found",
@@ -59,15 +66,34 @@ async function route(req, res) {
 }
 
 async function analyzeContract(req, res) {
+  const sourceCode = await readSourceCode(req);
+  const { status, contentType, body } = await callAnalyzer(sourceCode);
+
+  res.writeHead(status, {
+    "content-type": contentType,
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
+async function preflightTx(req, res) {
+  const body = await readJsonBody(req);
+  const result = await runPreflight({
+    body,
+    callAnalyzer,
+    env: {
+      SEPOLIA_RPC_URL: process.env.SEPOLIA_RPC_URL,
+      ETHERSCAN_API_KEY: process.env.ETHERSCAN_API_KEY,
+    },
+  });
+  sendJson(res, 200, result);
+}
+
+async function callAnalyzer(sourceCode) {
   if (!UPSTREAM_URL) {
-    sendJson(res, 500, {
-      error: "missing_upstream_url",
-      message: "AUDIT_ANALYZER_URL is not configured",
-    });
-    return;
+    throw httpError(503, "missing_upstream_url", "AUDIT_ANALYZER_URL is not configured");
   }
 
-  const sourceCode = await readSourceCode(req);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -85,24 +111,13 @@ async function analyzeContract(req, res) {
     const responseBody = await upstreamResponse.text();
     const contentType = upstreamResponse.headers.get("content-type") || "application/json";
 
-    res.writeHead(upstreamResponse.status, {
-      "content-type": contentType,
-      "cache-control": "no-store",
-    });
-    res.end(responseBody);
+    return { status: upstreamResponse.status, contentType, body: responseBody };
   } catch (error) {
     if (error.name === "AbortError") {
-      sendJson(res, 504, {
-        error: "upstream_timeout",
-        message: `Audit analyzer did not respond within ${REQUEST_TIMEOUT_MS}ms`,
-      });
-      return;
+      throw httpError(504, "upstream_timeout", `Audit analyzer did not respond within ${REQUEST_TIMEOUT_MS}ms`);
     }
 
-    sendJson(res, 502, {
-      error: "upstream_request_failed",
-      message: error.message,
-    });
+    throw httpError(502, "upstream_request_failed", error.message);
   } finally {
     clearTimeout(timeout);
   }
@@ -130,6 +145,20 @@ async function readSourceCode(req) {
   }
 
   return validateSourceCode(body.toString("utf8"));
+}
+
+async function readJsonBody(req) {
+  const body = await readRequestBody(req);
+
+  if (!body.length) {
+    throw httpError(400, "empty_body", "Request body is required");
+  }
+
+  try {
+    return JSON.parse(body.toString("utf8"));
+  } catch {
+    throw httpError(400, "invalid_json", "Request body must be valid JSON");
+  }
 }
 
 function validateSourceCode(value) {
