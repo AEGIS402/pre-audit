@@ -9,6 +9,18 @@ cp .env.sample .env
 npm start
 ```
 
+Or run inside Docker:
+
+```sh
+cp .env.sample .env
+npm run docker:build
+npm run docker:run         # detached, port 13001
+npm run docker:logs        # follow logs
+npm run docker:stop        # stop and remove
+```
+
+The container reads `.env` via `--env-file` and overrides `HOST=0.0.0.0` so the service is reachable on the host.
+
 Fill `.env` with the real values before starting:
 
 | Key | Required for | Notes |
@@ -150,6 +162,31 @@ Response:
   ]
 }
 ```
+
+## E2E Tests
+
+End-to-end tests run **outside** the container against `http://127.0.0.1:13001` and use the `x402-hook` submodule for both Solidity inputs and verified Sepolia addresses.
+
+```sh
+git submodule update --init --recursive
+npm run docker:build && npm run docker:run
+npm run e2e
+```
+
+Coverage:
+
+| Test | What it exercises |
+| --- | --- |
+| `GET /health` | container liveness + `upstream_configured` flag |
+| `POST /v1/contracts/analyze` (empty body) | `400 empty_body` validation |
+| `POST /v1/contracts/analyze` (raw Solidity from submodule) | analyzer round-trip on `x402-hook/contracts/Aegis402VulnerableHook.sol` |
+| `POST /v1/tx/preflight` (chainId=1) | `400 unsupported_chain` |
+| `POST /v1/tx/preflight` (malformed address) | `400 invalid_address` |
+| `POST /v1/tx/preflight` (deployer EOA) | `address_type=eoa`, `verdict=safe` |
+| `POST /v1/tx/preflight` (Aegis402SafeHook) | `code_status=verified`, analyzer ran |
+| `POST /v1/tx/preflight` (Aegis402VulnerableHook) | `verdict=unsafe`, ≥1 medium+ finding |
+
+Addresses are parsed from `x402-hook/README.md` at test time, so re-deploying the submodule and committing the new addresses is enough to point the suite at a fresh deployment. Override the target with `E2E_BASE_URL=http://host:port npm run e2e`.
 
 ## Sepolia Live Verification — `/v1/tx/preflight`
 

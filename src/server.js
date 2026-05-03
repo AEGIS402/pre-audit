@@ -13,6 +13,8 @@ const REQUEST_TIMEOUT_MS = parseInteger(process.env.REQUEST_TIMEOUT_MS, 600_000)
 const MAX_BODY_BYTES = parseInteger(process.env.MAX_BODY_BYTES, 5 * 1024 * 1024);
 
 const server = http.createServer(async (req, res) => {
+  setCorsHeaders(req, res);
+
   try {
     await route(req, res);
   } catch (error) {
@@ -31,8 +33,6 @@ server.listen(PORT, HOST, () => {
 });
 
 async function route(req, res) {
-  setCorsHeaders(res);
-
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
@@ -214,10 +214,21 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
-function setCorsHeaders(res) {
-  res.setHeader("access-control-allow-origin", process.env.CORS_ORIGIN || "*");
+function setCorsHeaders(req, res) {
+  const configured = process.env.CORS_ORIGIN || "*";
+
+  res.setHeader("access-control-allow-origin", configured);
+  if (configured !== "*") {
+    res.setHeader("vary", "origin");
+    res.setHeader("access-control-allow-credentials", "true");
+  }
   res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
-  res.setHeader("access-control-allow-headers", "content-type,authorization");
+  const requestedHeaders = req.headers["access-control-request-headers"];
+  res.setHeader(
+    "access-control-allow-headers",
+    requestedHeaders || "content-type,authorization",
+  );
+  res.setHeader("access-control-max-age", "86400");
 }
 
 function loadEnv(fileName = ".env") {

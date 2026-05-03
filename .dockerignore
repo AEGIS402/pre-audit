@@ -1,0 +1,17 @@
+.git
+.gitignore
+.gitmodules
+.env
+.env.*
+!.env.sample
+
+node_modules
+npm-debug.log*
+*.log
+
+x402-hook
+e2e
+samples
+README.md
+Dockerfile
+.dockerignore
