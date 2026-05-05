@@ -17,13 +17,13 @@ export function createResponseCache(options = {}) {
 export class ResponseCache {
   constructor({
     enabled = true,
-    ttlMs = 24 * 60 * 60 * 1000,
-    maxEntries = 256,
+    ttlMs = 0,
+    maxEntries = 4096,
     now = () => Date.now(),
   } = {}) {
-    this.enabled = Boolean(enabled) && ttlMs > 0 && maxEntries > 0;
-    this.ttlMs = ttlMs;
-    this.maxEntries = maxEntries;
+    this.ttlMs = Number.isFinite(ttlMs) && ttlMs >= 0 ? ttlMs : 0;
+    this.maxEntries = Number.isFinite(maxEntries) && maxEntries > 0 ? maxEntries : 0;
+    this.enabled = Boolean(enabled) && this.maxEntries > 0;
     this.now = now;
     this.entries = new Map();
     this.hits = 0;
@@ -44,15 +44,15 @@ export class ResponseCache {
       return null;
     }
 
-    if (entry.expiresAt <= this.now()) {
+    const now = this.now();
+    if (this.isExpired(entry, now)) {
       this.entries.delete(key);
       this.evictions += 1;
       this.misses += 1;
       return null;
     }
 
-    this.entries.delete(key);
-    this.entries.set(key, entry);
+    entry.accessedAt = now;
     this.hits += 1;
     return { ...entry.value };
   }
@@ -62,9 +62,11 @@ export class ResponseCache {
       return;
     }
 
+    const now = this.now();
     this.entries.set(key, {
       value: { ...value },
-      expiresAt: this.now() + this.ttlMs,
+      accessedAt: now,
+      expiresAt: this.ttlMs === 0 ? null : now + this.ttlMs,
     });
     this.sets += 1;
     this.pruneExpired();
@@ -85,9 +87,13 @@ export class ResponseCache {
   }
 
   pruneExpired() {
+    if (this.ttlMs === 0) {
+      return;
+    }
+
     const now = this.now();
     for (const [key, entry] of this.entries.entries()) {
-      if (entry.expiresAt <= now) {
+      if (this.isExpired(entry, now)) {
         this.entries.delete(key);
         this.evictions += 1;
       }
@@ -96,9 +102,26 @@ export class ResponseCache {
 
   trimToMaxEntries() {
     while (this.entries.size > this.maxEntries) {
-      const oldestKey = this.entries.keys().next().value;
+      let oldestKey = null;
+      let oldestAccessedAt = Infinity;
+
+      for (const [key, entry] of this.entries.entries()) {
+        if (entry.accessedAt < oldestAccessedAt) {
+          oldestKey = key;
+          oldestAccessedAt = entry.accessedAt;
+        }
+      }
+
+      if (oldestKey === null) {
+        return;
+      }
+
       this.entries.delete(oldestKey);
       this.evictions += 1;
     }
+  }
+
+  isExpired(entry, now) {
+    return this.ttlMs > 0 && entry.expiresAt <= now;
   }
 }

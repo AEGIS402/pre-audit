@@ -15,11 +15,11 @@ const MAX_BODY_BYTES = parseInteger(process.env.MAX_BODY_BYTES, 5 * 1024 * 1024)
 const ANALYZER_RESPONSE_CACHE_ENABLED = parseBoolean(process.env.ANALYZER_RESPONSE_CACHE_ENABLED, true);
 const ANALYZER_RESPONSE_CACHE_TTL_MS = parseNonNegativeInteger(
   process.env.ANALYZER_RESPONSE_CACHE_TTL_MS,
-  24 * 60 * 60 * 1000,
+  0,
 );
 const ANALYZER_RESPONSE_CACHE_MAX_ENTRIES = parseNonNegativeInteger(
   process.env.ANALYZER_RESPONSE_CACHE_MAX_ENTRIES,
-  256,
+  4096,
 );
 const ANALYZER_RESPONSE_CACHE_NAMESPACE = process.env.ANALYZER_RESPONSE_CACHE_NAMESPACE || "v1";
 const analyzerClient = createAnalyzerClient({
