@@ -37,6 +37,8 @@ Fill `.env` with the real values before starting:
 
 Analyzer responses are cached in memory by the exact normalized upstream request (`source_code`), upstream URL, and cache namespace. Only successful `2xx` analyzer responses are stored, and concurrent identical analyzer requests share one upstream call. Direct analyze responses include an `x-analyzer-cache` header (`miss`, `hit`, `deduped`, or `bypass`); `/health` reports cache counters under `analyzer_response_cache`.
 
+Before forwarding to the analyzer, the API prepends a stable one-line Solidity block comment to `source_code`. This keeps the LLM-facing input prefix identical across requests so an upstream prefill/prefix cache can reuse its warmed KV blocks while the variable contract source remains at the suffix. The prefix does not add a newline, so Solidity evidence line numbers stay aligned with the caller-provided source.
+
 ## API
 
 ### `POST /v1/contracts/analyze`

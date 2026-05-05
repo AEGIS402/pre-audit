@@ -2,12 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { createAnalyzerClient } from "../src/analyzer-client.js";
+import { prepareAnalyzerSourceCode } from "../src/analyzer-input.js";
 
 test("createAnalyzerClient caches successful analyzer responses by source", async () => {
   let calls = 0;
   const fetchImpl = async (_url, init) => {
     calls += 1;
-    assert.equal(JSON.parse(init.body).source_code, "contract A {}");
+    assert.equal(JSON.parse(init.body).source_code, prepareAnalyzerSourceCode("contract A {}"));
     return jsonResponse({ calls });
   };
 

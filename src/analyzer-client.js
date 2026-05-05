@@ -1,4 +1,5 @@
 import { createAnalyzerCacheKey, createResponseCache } from "./response-cache.js";
+import { analyzerInputStats, prepareAnalyzerSourceCode } from "./analyzer-input.js";
 
 export function createAnalyzerClient({
   upstreamUrl,
@@ -16,8 +17,9 @@ export function createAnalyzerClient({
       throw createError(503, "missing_upstream_url", "AUDIT_ANALYZER_URL is not configured");
     }
 
+    const analyzerSourceCode = prepareAnalyzerSourceCode(sourceCode);
     const cacheKey = cache.enabled
-      ? createAnalyzerCacheKey({ sourceCode, upstreamUrl, namespace: cacheNamespace })
+      ? createAnalyzerCacheKey({ sourceCode: analyzerSourceCode, upstreamUrl, namespace: cacheNamespace })
       : null;
 
     if (cacheKey) {
@@ -34,7 +36,7 @@ export function createAnalyzerClient({
     }
 
     const requestPromise = fetchAnalyzer({
-      sourceCode,
+      sourceCode: analyzerSourceCode,
       upstreamUrl,
       requestTimeoutMs,
       fetchImpl,
@@ -63,6 +65,7 @@ export function createAnalyzerClient({
   function cacheStats() {
     return {
       ...cache.stats(),
+      ...analyzerInputStats(),
       pending: pending.size,
       namespace: cacheNamespace,
     };
