@@ -1,9 +1,10 @@
 import { createAnalyzerCacheKey, createResponseCache } from "./response-cache.js";
-import { analyzerInputStats, prepareAnalyzerSourceCode } from "./analyzer-input.js";
+import { analyzerInputStats, buildAnalyzerRequest } from "./analyzer-input.js";
 
 export function createAnalyzerClient({
   upstreamUrl,
   requestTimeoutMs = 600_000,
+  requestFormat,
   cacheOptions,
   cacheNamespace = "v1",
   fetchImpl = fetch,
@@ -17,9 +18,9 @@ export function createAnalyzerClient({
       throw createError(503, "missing_upstream_url", "AUDIT_ANALYZER_URL is not configured");
     }
 
-    const analyzerSourceCode = prepareAnalyzerSourceCode(sourceCode);
+    const analyzerRequest = buildAnalyzerRequest(sourceCode, { requestFormat });
     const cacheKey = cache.enabled
-      ? createAnalyzerCacheKey({ sourceCode: analyzerSourceCode, upstreamUrl, namespace: cacheNamespace })
+      ? createAnalyzerCacheKey({ requestBody: analyzerRequest, upstreamUrl, namespace: cacheNamespace })
       : null;
 
     if (cacheKey) {
@@ -36,7 +37,7 @@ export function createAnalyzerClient({
     }
 
     const requestPromise = fetchAnalyzer({
-      sourceCode: analyzerSourceCode,
+      requestBody: analyzerRequest,
       upstreamUrl,
       requestTimeoutMs,
       fetchImpl,
@@ -65,7 +66,7 @@ export function createAnalyzerClient({
   function cacheStats() {
     return {
       ...cache.stats(),
-      ...analyzerInputStats(),
+      ...analyzerInputStats(requestFormat),
       pending: pending.size,
       namespace: cacheNamespace,
     };
@@ -79,7 +80,7 @@ export function isCacheableAnalyzerResponse(result) {
 }
 
 async function fetchAnalyzer({
-  sourceCode,
+  requestBody,
   upstreamUrl,
   requestTimeoutMs,
   fetchImpl,
@@ -95,7 +96,7 @@ async function fetchAnalyzer({
         accept: "application/json",
         "content-type": "application/json",
       },
-      body: JSON.stringify({ source_code: sourceCode }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
 

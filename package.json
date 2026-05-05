@@ -6,14 +6,14 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test --test-reporter=spec 'test/*.test.mjs'",
+    "test": "NODE_OPTIONS=--no-warnings=ExperimentalWarning node --test --test-reporter=spec 'test/*.test.mjs'",
     "docker:build": "docker build -t pre-audit-api:local .",
-    "docker:run": "docker run -d --rm --name pre-audit-api --env-file .env -e HOST=0.0.0.0 -p 13001:13001 pre-audit-api:local",
+    "docker:run": "docker run -d --rm --name pre-audit-api --env-file .env -e HOST=0.0.0.0 -v pre-audit-cache:/data -p 13001:13001 pre-audit-api:local",
     "docker:stop": "docker rm -f pre-audit-api",
     "docker:logs": "docker logs -f pre-audit-api",
-    "e2e": "node --test --test-reporter=spec 'e2e/*.test.mjs'"
+    "e2e": "NODE_OPTIONS=--no-warnings=ExperimentalWarning node --test --test-reporter=spec 'e2e/*.test.mjs'"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   }
 }

@@ -28,16 +28,18 @@ Fill `.env` with the real values before starting:
 | `AUDIT_ANALYZER_URL` | both endpoints | Upstream analyzer URL (intentionally not shown here) |
 | `ETHERSCAN_API_KEY` | `/v1/tx/preflight` | Etherscan v2 multichain API key |
 | `SEPOLIA_RPC_URL` | `/v1/tx/preflight` | Defaults to `https://1rpc.io/sepolia` |
+| `ANALYZER_REQUEST_FORMAT` | optional | Defaults to `source_code`; set to `messages` only when the upstream analyzer accepts chat-style `messages` requests |
 | `ANALYZER_RESPONSE_CACHE_ENABLED` | optional | Defaults to `true`; disables API-side analyzer response cache when set to `false`, `0`, `no`, or `off` |
 | `ANALYZER_RESPONSE_CACHE_TTL_MS` | optional | Defaults to `0`; `0` means entries do not expire by TTL |
 | `ANALYZER_RESPONSE_CACHE_MAX_ENTRIES` | optional | Defaults to `4096`; set to `0` to disable cache storage |
+| `ANALYZER_RESPONSE_CACHE_DB_PATH` | optional | Defaults to `.cache/analyzer-response-cache.sqlite` locally; Docker defaults to `/data/pre-audit/analyzer-response-cache.sqlite` |
 | `ANALYZER_RESPONSE_CACHE_NAMESPACE` | optional | Defaults to `v1`; bump this when changing analyzer prompt/model semantics to invalidate old entries |
 
 `.env` is not committed to git. If `PORT` is already in use, change it to an available port.
 
-Analyzer responses are cached in memory by the exact normalized upstream request (`source_code`), upstream URL, and cache namespace. Only successful `2xx` analyzer responses are stored, and concurrent identical analyzer requests share one upstream call. By default entries do not expire by TTL; when the cache exceeds `ANALYZER_RESPONSE_CACHE_MAX_ENTRIES`, the least recently accessed entry is evicted first. Direct analyze responses include an `x-analyzer-cache` header (`miss`, `hit`, `deduped`, or `bypass`); `/health` reports cache counters under `analyzer_response_cache`.
+Analyzer responses are cached in SQLite by the exact normalized upstream request, upstream URL, and cache namespace. The cache opens with `PRAGMA journal_mode=WAL` and Docker uses the `pre-audit-cache` named volume mounted at `/data` so entries survive container replacement. Only successful `2xx` analyzer responses are stored, and concurrent identical analyzer requests share one upstream call. By default entries do not expire by TTL; when the cache exceeds `ANALYZER_RESPONSE_CACHE_MAX_ENTRIES`, the least recently accessed entry is evicted first. Direct analyze responses include an `x-analyzer-cache` header (`miss`, `hit`, `deduped`, or `bypass`); `/health` reports cache counters under `analyzer_response_cache`.
 
-Before forwarding to the analyzer, the API prepends a stable one-line Solidity block comment to `source_code`. This keeps the LLM-facing input prefix identical across requests so an upstream prefill/prefix cache can reuse its warmed KV blocks while the variable contract source remains at the suffix. The prefix does not add a newline, so Solidity evidence line numbers stay aligned with the caller-provided source.
+When `ANALYZER_REQUEST_FORMAT=messages`, the API places stable audit instructions in the first `system` message and the variable Solidity source in the second `user` message. This keeps the LLM-facing chat-template prefix identical across requests so an upstream prefill/prefix cache can reuse its warmed KV blocks while the changing contract source remains in the suffix. The user message contains the caller-provided source unchanged, so Solidity evidence line numbers stay aligned with the input. The default `source_code` format remains available for analyzer schema compatibility.
 
 ## API
 
@@ -59,11 +61,28 @@ curl -X POST http://localhost:13001/v1/contracts/analyze \
   --data-binary @samples/Vault.sol
 ```
 
-Accepted JSON fields are `source_code`, `solidity`, or `code`. The upstream request is normalized to:
+Accepted JSON fields are `source_code`, `solidity`, or `code`. By default, the upstream request is normalized to:
 
 ```json
 {
   "source_code": "<solidity source>"
+}
+```
+
+When `ANALYZER_REQUEST_FORMAT=messages`, the upstream request is normalized to a chat-style prompt-cache-friendly shape:
+
+```json
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "<stable Solidity audit instructions and JSON schema>"
+    },
+    {
+      "role": "user",
+      "content": "<solidity source>"
+    }
+  ]
 }
 ```
 

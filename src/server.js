@@ -21,14 +21,19 @@ const ANALYZER_RESPONSE_CACHE_MAX_ENTRIES = parseNonNegativeInteger(
   process.env.ANALYZER_RESPONSE_CACHE_MAX_ENTRIES,
   4096,
 );
+const ANALYZER_RESPONSE_CACHE_DB_PATH =
+  process.env.ANALYZER_RESPONSE_CACHE_DB_PATH || ".cache/analyzer-response-cache.sqlite";
 const ANALYZER_RESPONSE_CACHE_NAMESPACE = process.env.ANALYZER_RESPONSE_CACHE_NAMESPACE || "v1";
+const ANALYZER_REQUEST_FORMAT = process.env.ANALYZER_REQUEST_FORMAT || "source_code";
 const analyzerClient = createAnalyzerClient({
   upstreamUrl: UPSTREAM_URL,
   requestTimeoutMs: REQUEST_TIMEOUT_MS,
+  requestFormat: ANALYZER_REQUEST_FORMAT,
   cacheOptions: {
     enabled: ANALYZER_RESPONSE_CACHE_ENABLED,
     ttlMs: ANALYZER_RESPONSE_CACHE_TTL_MS,
     maxEntries: ANALYZER_RESPONSE_CACHE_MAX_ENTRIES,
+    dbPath: ANALYZER_RESPONSE_CACHE_DB_PATH,
   },
   cacheNamespace: ANALYZER_RESPONSE_CACHE_NAMESPACE,
   createError: httpError,

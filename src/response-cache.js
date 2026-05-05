@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
-export function createAnalyzerCacheKey({ sourceCode, upstreamUrl, namespace }) {
+export function createAnalyzerCacheKey({ requestBody, upstreamUrl, namespace }) {
   const payload = JSON.stringify({
     namespace,
     upstreamUrl,
-    request: { source_code: sourceCode },
+    request: requestBody,
   });
 
   return createHash("sha256").update(payload).digest("hex");
@@ -19,17 +22,24 @@ export class ResponseCache {
     enabled = true,
     ttlMs = 0,
     maxEntries = 4096,
+    dbPath = ".cache/analyzer-response-cache.sqlite",
     now = () => Date.now(),
   } = {}) {
     this.ttlMs = Number.isFinite(ttlMs) && ttlMs >= 0 ? ttlMs : 0;
     this.maxEntries = Number.isFinite(maxEntries) && maxEntries > 0 ? maxEntries : 0;
     this.enabled = Boolean(enabled) && this.maxEntries > 0;
+    this.dbPath = dbPath;
     this.now = now;
-    this.entries = new Map();
+    this.db = null;
+    this.statements = null;
     this.hits = 0;
     this.misses = 0;
     this.sets = 0;
     this.evictions = 0;
+
+    if (this.enabled) {
+      this.open();
+    }
   }
 
   get(key) {
@@ -38,7 +48,7 @@ export class ResponseCache {
       return null;
     }
 
-    const entry = this.entries.get(key);
+    const entry = this.statements.get.get(key);
     if (!entry) {
       this.misses += 1;
       return null;
@@ -46,15 +56,19 @@ export class ResponseCache {
 
     const now = this.now();
     if (this.isExpired(entry, now)) {
-      this.entries.delete(key);
+      this.statements.delete.run(key);
       this.evictions += 1;
       this.misses += 1;
       return null;
     }
 
-    entry.accessedAt = now;
+    this.statements.touch.run(now, key);
     this.hits += 1;
-    return { ...entry.value };
+    return {
+      status: entry.status,
+      contentType: entry.content_type,
+      body: entry.body,
+    };
   }
 
   set(key, value) {
@@ -63,10 +77,14 @@ export class ResponseCache {
     }
 
     const now = this.now();
-    this.entries.set(key, {
-      value: { ...value },
-      accessedAt: now,
-      expiresAt: this.ttlMs === 0 ? null : now + this.ttlMs,
+    this.statements.upsert.run({
+      key,
+      status: value.status,
+      content_type: value.contentType,
+      body: value.body,
+      created_at: now,
+      accessed_at: now,
+      expires_at: this.ttlMs === 0 ? null : now + this.ttlMs,
     });
     this.sets += 1;
     this.pruneExpired();
@@ -76,9 +94,12 @@ export class ResponseCache {
   stats() {
     return {
       enabled: this.enabled,
+      storage: "sqlite",
+      db_path: this.dbPath,
+      journal_mode: this.enabled ? "wal" : null,
       ttl_ms: this.ttlMs,
       max_entries: this.maxEntries,
-      size: this.entries.size,
+      size: this.enabled ? Number(this.statements.count.get().count) : 0,
       hits: this.hits,
       misses: this.misses,
       sets: this.sets,
@@ -92,36 +113,92 @@ export class ResponseCache {
     }
 
     const now = this.now();
-    for (const [key, entry] of this.entries.entries()) {
-      if (this.isExpired(entry, now)) {
-        this.entries.delete(key);
-        this.evictions += 1;
-      }
+    const result = this.statements.deleteExpired.run(now);
+    if (Number.isInteger(result.changes) && result.changes > 0) {
+      this.evictions += result.changes;
     }
   }
 
   trimToMaxEntries() {
-    while (this.entries.size > this.maxEntries) {
-      let oldestKey = null;
-      let oldestAccessedAt = Infinity;
+    const size = Number(this.statements.count.get().count);
+    const overLimit = size - this.maxEntries;
 
-      for (const [key, entry] of this.entries.entries()) {
-        if (entry.accessedAt < oldestAccessedAt) {
-          oldestKey = key;
-          oldestAccessedAt = entry.accessedAt;
-        }
-      }
+    if (overLimit <= 0) {
+      return;
+    }
 
-      if (oldestKey === null) {
-        return;
-      }
-
-      this.entries.delete(oldestKey);
+    const oldest = this.statements.oldest.all(overLimit);
+    for (const row of oldest) {
+      this.statements.delete.run(row.key);
       this.evictions += 1;
     }
   }
 
   isExpired(entry, now) {
-    return this.ttlMs > 0 && entry.expiresAt <= now;
+    return this.ttlMs > 0 && entry.expires_at <= now;
+  }
+
+  open() {
+    mkdirSync(dirname(this.dbPath), { recursive: true });
+
+    this.db = new DatabaseSync(this.dbPath);
+    this.db.exec("PRAGMA journal_mode=WAL");
+    this.db.exec("PRAGMA synchronous=NORMAL");
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS analyzer_response_cache (
+        key TEXT PRIMARY KEY,
+        status INTEGER NOT NULL,
+        content_type TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        accessed_at INTEGER NOT NULL,
+        expires_at INTEGER
+      )
+    `);
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_analyzer_response_cache_accessed_at ON analyzer_response_cache(accessed_at)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_analyzer_response_cache_expires_at ON analyzer_response_cache(expires_at)");
+
+    this.statements = {
+      get: this.db.prepare(`
+        SELECT status, content_type, body, expires_at
+        FROM analyzer_response_cache
+        WHERE key = ?
+      `),
+      touch: this.db.prepare("UPDATE analyzer_response_cache SET accessed_at = ? WHERE key = ?"),
+      upsert: this.db.prepare(`
+        INSERT INTO analyzer_response_cache (
+          key,
+          status,
+          content_type,
+          body,
+          created_at,
+          accessed_at,
+          expires_at
+        ) VALUES (
+          $key,
+          $status,
+          $content_type,
+          $body,
+          $created_at,
+          $accessed_at,
+          $expires_at
+        )
+        ON CONFLICT(key) DO UPDATE SET
+          status = excluded.status,
+          content_type = excluded.content_type,
+          body = excluded.body,
+          accessed_at = excluded.accessed_at,
+          expires_at = excluded.expires_at
+      `),
+      delete: this.db.prepare("DELETE FROM analyzer_response_cache WHERE key = ?"),
+      deleteExpired: this.db.prepare("DELETE FROM analyzer_response_cache WHERE expires_at IS NOT NULL AND expires_at <= ?"),
+      oldest: this.db.prepare(`
+        SELECT key
+        FROM analyzer_response_cache
+        ORDER BY accessed_at ASC, created_at ASC, key ASC
+        LIMIT ?
+      `),
+      count: this.db.prepare("SELECT COUNT(*) AS count FROM analyzer_response_cache"),
+    };
   }
 }
