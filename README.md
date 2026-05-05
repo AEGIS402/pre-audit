@@ -28,8 +28,14 @@ Fill `.env` with the real values before starting:
 | `AUDIT_ANALYZER_URL` | both endpoints | Upstream analyzer URL (intentionally not shown here) |
 | `ETHERSCAN_API_KEY` | `/v1/tx/preflight` | Etherscan v2 multichain API key |
 | `SEPOLIA_RPC_URL` | `/v1/tx/preflight` | Defaults to `https://1rpc.io/sepolia` |
+| `ANALYZER_RESPONSE_CACHE_ENABLED` | optional | Defaults to `true`; disables API-side analyzer response cache when set to `false`, `0`, `no`, or `off` |
+| `ANALYZER_RESPONSE_CACHE_TTL_MS` | optional | Defaults to `86400000` (24h); set to `0` to disable cache storage |
+| `ANALYZER_RESPONSE_CACHE_MAX_ENTRIES` | optional | Defaults to `256`; set to `0` to disable cache storage |
+| `ANALYZER_RESPONSE_CACHE_NAMESPACE` | optional | Defaults to `v1`; bump this when changing analyzer prompt/model semantics to invalidate old entries |
 
 `.env` is not committed to git. If `PORT` is already in use, change it to an available port.
+
+Analyzer responses are cached in memory by the exact normalized upstream request (`source_code`), upstream URL, and cache namespace. Only successful `2xx` analyzer responses are stored, and concurrent identical analyzer requests share one upstream call. Direct analyze responses include an `x-analyzer-cache` header (`miss`, `hit`, `deduped`, or `bypass`); `/health` reports cache counters under `analyzer_response_cache`.
 
 ## API
 

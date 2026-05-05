@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "test": "node --test --test-reporter=spec 'test/*.test.mjs'",
     "docker:build": "docker build -t pre-audit-api:local .",
     "docker:run": "docker run -d --rm --name pre-audit-api --env-file .env -e HOST=0.0.0.0 -p 13001:13001 pre-audit-api:local",
     "docker:stop": "docker rm -f pre-audit-api",

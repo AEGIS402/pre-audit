@@ -2,6 +2,7 @@ import http from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { createAnalyzerClient } from "./analyzer-client.js";
 import { runPreflight } from "./preflight.js";
 
 loadEnv();
@@ -11,6 +12,28 @@ const HOST = process.env.HOST || "127.0.0.1";
 const UPSTREAM_URL = process.env.AUDIT_ANALYZER_URL;
 const REQUEST_TIMEOUT_MS = parseInteger(process.env.REQUEST_TIMEOUT_MS, 600_000);
 const MAX_BODY_BYTES = parseInteger(process.env.MAX_BODY_BYTES, 5 * 1024 * 1024);
+const ANALYZER_RESPONSE_CACHE_ENABLED = parseBoolean(process.env.ANALYZER_RESPONSE_CACHE_ENABLED, true);
+const ANALYZER_RESPONSE_CACHE_TTL_MS = parseNonNegativeInteger(
+  process.env.ANALYZER_RESPONSE_CACHE_TTL_MS,
+  24 * 60 * 60 * 1000,
+);
+const ANALYZER_RESPONSE_CACHE_MAX_ENTRIES = parseNonNegativeInteger(
+  process.env.ANALYZER_RESPONSE_CACHE_MAX_ENTRIES,
+  256,
+);
+const ANALYZER_RESPONSE_CACHE_NAMESPACE = process.env.ANALYZER_RESPONSE_CACHE_NAMESPACE || "v1";
+const analyzerClient = createAnalyzerClient({
+  upstreamUrl: UPSTREAM_URL,
+  requestTimeoutMs: REQUEST_TIMEOUT_MS,
+  cacheOptions: {
+    enabled: ANALYZER_RESPONSE_CACHE_ENABLED,
+    ttlMs: ANALYZER_RESPONSE_CACHE_TTL_MS,
+    maxEntries: ANALYZER_RESPONSE_CACHE_MAX_ENTRIES,
+  },
+  cacheNamespace: ANALYZER_RESPONSE_CACHE_NAMESPACE,
+  createError: httpError,
+});
+const { callAnalyzer } = analyzerClient;
 
 const server = http.createServer(async (req, res) => {
   setCorsHeaders(req, res);
@@ -45,6 +68,7 @@ async function route(req, res) {
     sendJson(res, 200, {
       status: "ok",
       upstream_configured: Boolean(UPSTREAM_URL),
+      analyzer_response_cache: analyzerClient.cacheStats(),
     });
     return;
   }
@@ -67,11 +91,12 @@ async function route(req, res) {
 
 async function analyzeContract(req, res) {
   const sourceCode = await readSourceCode(req);
-  const { status, contentType, body } = await callAnalyzer(sourceCode);
+  const { status, contentType, body, cacheStatus } = await callAnalyzer(sourceCode);
 
   res.writeHead(status, {
     "content-type": contentType,
     "cache-control": "no-store",
+    "x-analyzer-cache": cacheStatus || "bypass",
   });
   res.end(body);
 }
@@ -87,40 +112,6 @@ async function preflightTx(req, res) {
     },
   });
   sendJson(res, 200, result);
-}
-
-async function callAnalyzer(sourceCode) {
-  if (!UPSTREAM_URL) {
-    throw httpError(503, "missing_upstream_url", "AUDIT_ANALYZER_URL is not configured");
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-  try {
-    const upstreamResponse = await fetch(UPSTREAM_URL, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ source_code: sourceCode }),
-      signal: controller.signal,
-    });
-
-    const responseBody = await upstreamResponse.text();
-    const contentType = upstreamResponse.headers.get("content-type") || "application/json";
-
-    return { status: upstreamResponse.status, contentType, body: responseBody };
-  } catch (error) {
-    if (error.name === "AbortError") {
-      throw httpError(504, "upstream_timeout", `Audit analyzer did not respond within ${REQUEST_TIMEOUT_MS}ms`);
-    }
-
-    throw httpError(502, "upstream_request_failed", error.message);
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 async function readSourceCode(req) {
@@ -278,6 +269,19 @@ function stripQuotes(value) {
 function parseInteger(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNonNegativeInteger(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parseBoolean(value, fallback) {
+  if (value === undefined || value === "") {
+    return fallback;
+  }
+
+  return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
 }
 
 function httpError(status, code, message) {
